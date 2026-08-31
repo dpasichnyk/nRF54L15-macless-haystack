@@ -1,0 +1,5 @@
+# Keep the build context closed by default. The endpoint image needs only the
+# dependency lock and the reviewed upstream patch.
+*
+!deploy/requirements.lock
+!deploy/patches/macless-haystack-2fa-idmsa.patch

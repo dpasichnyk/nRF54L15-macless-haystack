@@ -1,0 +1,33 @@
+source "Kconfig.zephyr"
+
+menu "nRF54L15 beacon"
+
+config N_KEYS
+	int "Number of beacon keys"
+	default 50
+	range 1 50
+
+config REUSE_CYCLES
+	int "Advertisement cycles before key reuse"
+	default 1
+	range 1 255
+
+config ADVERTISE_WINDOW_S
+	int "Advertisement window in seconds"
+	default 1800
+
+config SLEEP_S
+	int "Sleep interval in seconds"
+	default 0
+
+config ADV_INTERVAL_MS
+	int "Advertisement interval in milliseconds"
+	default 5000
+	range 20 10240
+
+config STATE_BYTE
+	int "Initial state byte"
+	default 0
+	range 0 255
+
+endmenu

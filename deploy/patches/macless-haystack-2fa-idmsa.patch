@@ -1,0 +1,52 @@
+# Retains the endpoint correction from Macless-Haystack PR #226:
+# https://github.com/dchristl/macless-haystack/pull/226
+# Apple authentication requests use requests' default TLS certificate verification.
+diff --git a/endpoint/register/pypush_gsa_icloud.py b/endpoint/register/pypush_gsa_icloud.py
+index 694a302..108e8ac 100644
+--- a/endpoint/register/pypush_gsa_icloud.py
++++ b/endpoint/register/pypush_gsa_icloud.py
+@@ -66,7 +66,6 @@ def icloud_login_mobileme(username='', password=''):
+             auth=(username, pet),
+             data=data,
+             headers=headers,
+-            verify=False,
+     ) as resp:
+         resp.raise_for_status()
+     response = f"HTTP-Code: {resp.status_code}\n{resp.text}"
+@@ -151,7 +150,6 @@ def gsa_authenticated_request(parameters):
+             "https://gsa.apple.com/grandslam/GsService2",
+             headers=headers,
+             data=plist.dumps(body),
+-            verify=False,
+             timeout=5,
+     ) as resp:
+         resp.raise_for_status()
+@@ -249,7 +247,7 @@ def sms_second_factor(dsid, idms_token):
+ 
+     # Extract the "boot_args" from the auth page to get the id of the trusted phone number
+     pattern = r'<script.*class="boot_args">\s*(.*?)\s*</script>'
+-    with requests.get("https://gsa.apple.com/auth", headers=headers, verify=False) as auth:
++    with requests.get("https://gsa.apple.com/auth", headers=headers) as auth:
+         auth.raise_for_status()
+         sms_id = 1
+         match = re.search(pattern, auth.text, re.DOTALL)
+@@ -292,10 +290,9 @@ def sms_second_factor(dsid, idms_token):
+ 
+     # Send the 2FA code to Apple
+     with  requests.post(
+-            "https://gsa.apple.com/auth/verify/phone/securitycode",
++            "https://idmsa.apple.com/appleauth/auth/verify/phone/securitycode",
+             json=body,
+             headers=headers,
+-            verify=False,
+             timeout=5,
+     ) as resp:
+         resp.raise_for_status()
+@@ -325,7 +322,6 @@ def request_code(headers,sms_id):
+             "https://idmsa.apple.com/appleauth/auth/verify/phone",
+             json=body,
+             headers=headers,
+-            verify=False,
+             timeout=5
+     ) as req:
+         req.raise_for_status()

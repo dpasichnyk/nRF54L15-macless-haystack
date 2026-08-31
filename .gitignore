@@ -1,0 +1,31 @@
+# Zephyr and NCS build trees
+/build/
+build-*/
+/.west/
+/modules/
+/zephyr/
+/nrf/
+/nrfxlib/
+
+# Generated key material
+src/keys.c
+public-x.csv
+*_devices.json
+*.keys
+
+# Local credentials
+/deploy/endpoint/auth.json
+.env
+.env.*
+!.env.example
+
+# Python and test caches
+__pycache__/
+*.pyc
+/.pytest_cache/
+/.ruff_cache/
+/.venv/
+
+# Local development tools
+/.omo/
+.DS_Store

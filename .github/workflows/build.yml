@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Run host C tests
+        run: |
+          cmake -S tests/host -B build-host -DCMAKE_C_FLAGS="-Wall -Wextra -Werror"
+          cmake --build build-host --parallel 2
+          ctest --test-dir build-host --output-on-failure
+      - name: Run Python tests
+        run: uv run --with pytest==9.1.1 --with cryptography==50.0.1 --with typer==0.27.2 pytest tests/python -q
+      - name: Run Python static checks
+        run: |
+          uv run --with ruff==0.16.5 ruff check scripts tests/python
+          uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts tests/python
+
+  firmware-build:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain@sha256:2c19052c8e6c00b9575f43a4a1b544f36692b2f160e6a3d2ab3fa6e8ec102b18
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: nrf5-tag
+      - name: Initialize NCS workspace
+        run: |
+          west init -l nrf5-tag
+          west update -o=--depth=1 -n
+      - name: Build XIAO nRF54L15 firmware
+        run: west build --pristine=always --no-sysbuild -b xiao_nrf54l15/nrf54l15/cpuapp -d build nrf5-tag -- -DBEACON_ALLOW_EXAMPLE_KEYS=ON
