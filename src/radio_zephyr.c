@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/kernel.h>
@@ -30,6 +31,14 @@ BUILD_ASSERT(((uint64_t)CONFIG_ADV_INTERVAL_MS * 8U) / 5U >=
 BUILD_ASSERT(((uint64_t)CONFIG_ADV_INTERVAL_MS * 8U) / 5U <=
                  RADIO_ADV_INTERVAL_MAX,
              "CONFIG_ADV_INTERVAL_MS exceeds the legacy advertising maximum");
+BUILD_ASSERT(CONFIG_ADVERTISE_WINDOW_S > 0 &&
+                 CONFIG_ADVERTISE_WINDOW_S <= 65535,
+             "CONFIG_ADVERTISE_WINDOW_S must be between 1 and 65535");
+BUILD_ASSERT(CONFIG_SLEEP_S >= 0 && CONFIG_SLEEP_S <= 65535,
+             "CONFIG_SLEEP_S must be between 0 and 65535");
+BUILD_ASSERT((uint64_t)CONFIG_ADVERTISE_WINDOW_S * 1000U >=
+                 CONFIG_ADV_INTERVAL_MS,
+             "Advertisement window must cover at least one interval");
 
 static int identity_address_from_key(
     const uint8_t key[BEACON_KEY_BYTES], bt_addr_le_t *address)
@@ -46,7 +55,12 @@ static int identity_address_from_key(
     return 0;
 }
 
-static int reset_identity(uint8_t dedicated_id,
+struct radio_zephyr_context {
+    uint8_t dedicated_id;
+    bt_addr_le_t identity_address;
+};
+
+static int reset_identity(struct radio_zephyr_context *radio,
                           const uint8_t key[BEACON_KEY_BYTES])
 {
     bt_addr_le_t address;
@@ -57,18 +71,23 @@ static int reset_identity(uint8_t dedicated_id,
         return error;
     }
 
-    error = bt_id_reset(dedicated_id, &address, NULL);
-    if (error != 0) {
-        LOG_ERR("Could not reset identity %u: %d", (unsigned int)dedicated_id,
-                error);
+    if (address.type == radio->identity_address.type &&
+        memcmp(address.a.val, radio->identity_address.a.val,
+               sizeof(address.a.val)) == 0) {
+        return 0;
     }
 
-    return error;
-}
+    error = bt_id_reset(radio->dedicated_id, &address, NULL);
+    if (error < 0) {
+        LOG_ERR("Could not reset identity %u: %d",
+                (unsigned int)radio->dedicated_id,
+                error);
+        return error;
+    }
 
-struct radio_zephyr_context {
-    uint8_t dedicated_id;
-};
+    radio->identity_address = address;
+    return 0;
+}
 
 static int start_advertising(void *context, size_t key_index,
                              uint16_t interval_units)
@@ -117,9 +136,9 @@ static int stop_advertising(void *context)
 
 static int reset_advertising_identity(void *context, size_t next_key_index)
 {
-    const struct radio_zephyr_context *radio = context;
+    struct radio_zephyr_context *radio = context;
 
-    return reset_identity(radio->dedicated_id, beacon_keys[next_key_index]);
+    return reset_identity(radio, beacon_keys[next_key_index]);
 }
 
 static void sleep_seconds(void *context, uint32_t seconds)
@@ -186,6 +205,7 @@ int radio_zephyr_run(void)
     LOG_INF("Bluetooth enabled with dedicated identity %u",
             (unsigned int)dedicated_id);
     radio.dedicated_id = dedicated_id;
+    radio.identity_address = address;
 
     for (;;) {
         error = radio_cycle_run_once(&rotation, &config, &ops);

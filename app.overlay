@@ -1,0 +1,28 @@
+/* NCS v3.2.1 declares both controls active-high. Power the RF switch and
+ * drive its select low for the onboard ceramic antenna (Seeed wiring).
+ */
+&rfsw_pwr {
+	regulator-boot-on;
+};
+
+&rfsw_ctl {
+	regulator-boot-off;
+};
+
+/* The beacon does not use the IMU/microphone supply. Explicitly drive it off,
+ * including after resets where the enable pin may already be high.
+ */
+&pdm_imu_pwr {
+	/delete-property/ regulator-boot-on;
+	regulator-boot-off;
+};
+
+/* The board's GPIO hog shares the regulator enable pin. Keep one owner. */
+&imu_power_default_on {
+	status = "disabled";
+};
+
+/* UART20 remains available for debug.conf; UART21 is never used. */
+&uart21 {
+	status = "disabled";
+};

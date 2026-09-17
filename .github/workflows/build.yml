@@ -5,26 +5,43 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   host-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
-      - name: Run host C tests
-        run: |
-          cmake -S tests/host -B build-host -DCMAKE_C_FLAGS="-Wall -Wextra -Werror"
-          cmake --build build-host --parallel 2
-          ctest --test-dir build-host --output-on-failure
-      - name: Run Python tests
-        run: uv run --with pytest==9.1.1 --with cryptography==50.0.1 --with typer==0.27.2 pytest tests/python -q
-      - name: Run Python static checks
-        run: |
-          uv run --with ruff==0.16.5 ruff check scripts tests/python
-          uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts tests/python
+      - name: Run sanitized host tests and Python checks
+        run: make test-firmware
+
+  deployment-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Check readiness and isolated deployment contract
+        run: make test-deploy
 
   firmware-build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: production
+            extra_conf: ""
+          - profile: development
+            extra_conf: debug.conf
     container:
       image: ghcr.io/nrfconnect/sdk-nrf-toolchain@sha256:2c19052c8e6c00b9575f43a4a1b544f36692b2f160e6a3d2ab3fa6e8ec102b18
     defaults:
@@ -38,5 +55,13 @@ jobs:
         run: |
           west init -l nrf5-tag
           west update -o=--depth=1 -n
-      - name: Build XIAO nRF54L15 firmware
-        run: west build --pristine=always --no-sysbuild -b xiao_nrf54l15/nrf54l15/cpuapp -d build nrf5-tag -- -DBEACON_ALLOW_EXAMPLE_KEYS=ON
+      - name: Compile profile with example keys (not a release image)
+        run: >-
+          west build --pristine=always --no-sysbuild
+          -b xiao_nrf54l15/nrf54l15/cpuapp -d build nrf5-tag
+          -- -DBEACON_ALLOW_EXAMPLE_KEYS=ON
+          -DEXTRA_CONF_FILE="${{ matrix.extra_conf }}"
+      - name: Verify resolved profile configuration
+        run: >-
+          cmake -DBUILD_DIR="$PWD/build" -DPROFILE=${{ matrix.profile }}
+          -P nrf5-tag/tests/firmware/check_profile.cmake

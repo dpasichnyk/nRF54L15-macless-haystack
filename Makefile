@@ -1,21 +1,36 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help keys build flash setup up down logs status reset-auth test test-firmware test-deploy
+.PHONY: help keys build build-dev flash flash-dev monitor setup up down logs status reset-auth test test-firmware test-deploy
 
 COMPOSE := docker compose
 AUTH := deploy/endpoint/auth.json
 ENDPOINT_DATA := deploy/endpoint
+# The readiness probe defaults to the Compose Anisette v1 endpoint.
+ANISETTE_READY_URL ?= http://anisette:6969
 KEY_DIR ?= $(HOME)/.local/share/nrf5-tag
 DEVICES_JSON := $(KEY_DIR)/nrf5-tag_devices.json
 PUBLIC_KEYS := $(KEY_DIR)/public-x.csv
 NCS_VERSION := v3.2.1
-BUILD_DIR := $(CURDIR)/build-ncs-3.2.1
+NCS_DIR ?= /opt/nordic/ncs/$(NCS_VERSION)
+PROFILE ?= production
+ifeq ($(PROFILE),production)
+EXTRA_CONF :=
+else ifeq ($(PROFILE),development)
+EXTRA_CONF := debug.conf
+else
+$(error PROFILE must be production or development)
+endif
+BUILD_DIR ?= $(CURDIR)/build-$(PROFILE)
 BOARD := xiao_nrf54l15/nrf54l15/cpuapp
 
 help:
 	@printf '%s\n' \
 		'make keys        Generate the private import file and firmware public key' \
-		'make flash       Build and verified-flash the firmware' \
+		'make build       Build and check the low-power production profile' \
+		'make build-dev   Build and check the development profile with RTT logs' \
+		'make flash       Build and verified-flash production firmware' \
+		'make flash-dev   Build and verified-flash development firmware' \
+		'make monitor     Read development RTT logs over USB (resets the board)' \
 		'make setup       Register Apple credentials interactively and start the endpoint' \
 		'make up          Start the registered endpoint' \
 		'make down        Stop services without deleting data' \
@@ -39,13 +54,32 @@ keys:
 build:
 	@test -f src/keys.c || { printf '%s\n' 'src/keys.c is missing; run make keys.' >&2; exit 1; }
 	nrfutil sdk-manager toolchain launch --ncs-version $(NCS_VERSION) \
-		--chdir /opt/nordic/ncs/$(NCS_VERSION) -- west build \
-		--pristine=always --no-sysbuild -b $(BOARD) -d "$(BUILD_DIR)" "$(CURDIR)"
+		--chdir "$(NCS_DIR)" -- west build \
+		--pristine=always --no-sysbuild -b $(BOARD) -d "$(BUILD_DIR)" "$(CURDIR)" \
+		-- -DEXTRA_CONF_FILE="$(EXTRA_CONF)"
+	cmake -DBUILD_DIR="$(BUILD_DIR)" -DPROFILE=$(PROFILE) -P tests/firmware/check_profile.cmake
+
+build-dev:
+	$(MAKE) build PROFILE=development
+
+flash-dev:
+	$(MAKE) flash PROFILE=development
+
+monitor: override PROFILE := development
+monitor:
+	@test -f "$(BUILD_DIR)/zephyr/zephyr.elf" || { printf '%s\n' 'Run make flash-dev before monitoring.' >&2; exit 1; }
+	@set -eu; \
+	environment=$$(nrfutil sdk-manager toolchain env --ncs-version $(NCS_VERSION) --as-script sh); \
+	eval "$$environment"; \
+	cd "$(NCS_DIR)"; \
+	exec west rtt -r openocd -d "$(BUILD_DIR)"
 
 flash: build
 	nrfutil sdk-manager toolchain launch --ncs-version $(NCS_VERSION) \
-		--chdir /opt/nordic/ncs/$(NCS_VERSION) -- west flash \
-		-r openocd --verify -d "$(BUILD_DIR)"
+		--chdir "$(NCS_DIR)" -- west flash \
+		-r openocd --verify -d "$(BUILD_DIR)" \
+		--config "$(NCS_DIR)/zephyr/boards/seeed/xiao_nrf54l15/support/openocd.cfg" \
+		--config "$(CURDIR)/scripts/openocd-rram.cfg"
 
 setup:
 	@set -eu; \
@@ -60,6 +94,9 @@ setup:
 	chmod 700 "$(ENDPOINT_DATA)"; \
 	$(COMPOSE) build endpoint; \
 	$(COMPOSE) up -d anisette; \
+	$(COMPOSE) run --rm --no-deps -T \
+		-e ANISETTE_READY_URL="$(ANISETTE_READY_URL)" endpoint \
+		python - < scripts/wait_for_anisette.py; \
 	$(COMPOSE) run --rm endpoint python -c 'from endpoint.register.apple_cryptography import registerDevice; registerDevice()'; \
 	if [ ! -f "$(AUTH)" ]; then \
 		printf '%s\n' 'Registration did not create deploy/endpoint/auth.json.' >&2; \
@@ -95,11 +132,16 @@ reset-auth:
 test: test-firmware test-deploy
 
 test-firmware:
-	cmake -S tests/host -B /tmp/nrf5-tag-host -DCMAKE_C_FLAGS="-Wall -Wextra -Werror"
-	cmake --build /tmp/nrf5-tag-host --clean-first --parallel 2
-	ctest --test-dir /tmp/nrf5-tag-host --output-on-failure
+	@set -eu; \
+	build=$$(mktemp -d "$${TMPDIR:-/tmp}/nrf5-tag-host.XXXXXX"); \
+	trap 'rm -rf "$$build"' EXIT HUP INT TERM; \
+	cmake -S tests/host -B "$$build" -DCMAKE_C_FLAGS="-Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer"; \
+	cmake --build "$$build" --parallel 2; \
+	ctest --test-dir "$$build" --output-on-failure
 	uv run --with pytest==9.1.1 --with cryptography==50.0.1 --with typer==0.27.2 pytest tests/python -q
 	uv run --with ruff==0.16.5 ruff check scripts tests/python
+	uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts tests/python
 
 test-deploy:
+	sh tests/deploy/test_setup_readiness.sh
 	sh tests/deploy/test_contract.sh

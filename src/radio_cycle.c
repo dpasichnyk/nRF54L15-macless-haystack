@@ -12,6 +12,7 @@ int radio_cycle_run_once(struct beacon_rotation_state *rotation,
         ops->start == NULL || ops->stop == NULL || ops->reset == NULL ||
         ops->sleep == NULL || config->key_count == 0U ||
         config->reuse_cycles == 0U || config->interval_units == 0U ||
+        config->advertise_seconds == 0U ||
         rotation->key_index >= config->key_count) {
         return -EINVAL;
     }

@@ -192,6 +192,10 @@ static void test_run_once_rejects_invalid_arguments(void)
     config.interval_units = 0U;
     assert(radio_cycle_run_once(&rotation, &config, &ops) == -EINVAL);
     config = test_config();
+    config.advertise_seconds = 0U;
+    assert(radio_cycle_run_once(&rotation, &config, &ops) == -EINVAL);
+    assert(radio.event_count == 0U);
+    config = test_config();
     ops.start = NULL;
     assert(radio_cycle_run_once(&rotation, &config, &ops) == -EINVAL);
     ops = test_ops(&radio);

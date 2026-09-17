@@ -15,10 +15,15 @@ config REUSE_CYCLES
 config ADVERTISE_WINDOW_S
 	int "Advertisement window in seconds"
 	default 1800
+	range 1 65535
+	help
+	  Must cover at least one configured advertising interval. The upper
+	  bound keeps the timeout conversion within the supported tick range.
 
 config SLEEP_S
 	int "Sleep interval in seconds"
 	default 0
+	range 0 65535
 
 config ADV_INTERVAL_MS
 	int "Advertisement interval in milliseconds"

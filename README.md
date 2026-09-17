@@ -22,6 +22,10 @@ board, core, or programmer will work.
 - An Apple ID that can complete SMS two-factor authentication
 - A Macless-Haystack client for importing the generated devices JSON
 
+Local regression tests also require CMake, a C compiler with AddressSanitizer/
+UndefinedBehaviorSanitizer support, and Tcl (`tclsh`). The SDK remains pinned to
+the hardware-verified NCS `v3.2.1`; builds do not silently upgrade it.
+
 ## Quick start
 ### 1. Generate keys
 ```sh
@@ -44,15 +48,21 @@ Connect the board, then run:
 make flash
 ```
 
-This builds with NCS `v3.2.1` and flashes the CPUAPP image through OpenOCD with image verification enabled.
+This builds with NCS `v3.2.1` and flashes the CPUAPP image through OpenOCD with
+image verification enabled. The local loader commits the nRF54L15 RRAM write
+buffer before reset so a partial final write is not lost.
 
 ### 3. Register Apple access
 ```sh
 make setup
 ```
 
-The command is interactive. It asks for the Apple ID, password, and SMS 2FA
-code, then starts the endpoint. The saved token is `deploy/endpoint/auth.json`.
+Setup waits for Anisette to return usable headers before registration, with
+12 attempts and a five-second socket timeout per request. If startup fails,
+registration does not proceed. Invalid readiness URLs fail without retrying;
+responses must be valid JSON and no larger than 64 KiB. The command is
+interactive: it asks for the Apple ID, password, and SMS 2FA code, then starts
+the endpoint. The saved token is `deploy/endpoint/auth.json`.
 
 The file is kept with mode `0600` and is ignored by Git. The endpoint is
 available from the host at `http://127.0.0.1:6176`. Inside the container it
@@ -77,6 +87,16 @@ The firmware has one job: advertise.
   between key epochs; Zephyr only blocks the application thread while advertising.
 - It only broadcasts. It does not scan, connect, advertise a name, or send scan
   responses.
+- Production builds disable serial logging and turn off the unused IMU and
+  microphone supply. The controller remains active for scheduled advertisements;
+  the CPU uses System ON idle between work, not System OFF.
+- The RF switch is explicitly powered on and selects the onboard ceramic
+  antenna. An external antenna requires a different select setting.
+
+The advertising window must be positive and at least as long as the configured
+advertising interval. Both window and optional sleep durations are limited to
+65,535 seconds to keep timeout arithmetic bounded. These are nominal intervals,
+not guarantees of an on-air packet or a network sighting.
 
 The endpoint returns encrypted Apple reports. The client uses the private devices JSON to decrypt them. An empty result does not by itself show that the beacon is faulty.
 
@@ -85,7 +105,11 @@ The endpoint returns encrypted Apple reports. The client uses the private device
 | --- | --- |
 | `make keys` | Generate the private import and firmware public key table. |
 | `make help` | List the supported commands. |
-| `make flash` | Build and verified-flash the firmware. |
+| `make build` | Build and verify the production configuration, without flashing. |
+| `make build-dev` | Build and verify the development configuration, without flashing. |
+| `make flash` | Build and verified-flash production firmware. |
+| `make flash-dev` | Build and verified-flash development firmware. |
+| `make monitor` | Reset the development firmware and stream RTT logs over USB. |
 | `make setup` | Register Apple credentials and start the endpoint. |
 | `make status` | Show Docker service status. |
 | `make logs` | Follow Docker service logs. |
@@ -93,10 +117,51 @@ The endpoint returns encrypted Apple reports. The client uses the private device
 | `make down` | Stop services without deleting their data. |
 | `make reset-auth` | Remove only the saved Apple token. |
 | `make test` | Run firmware and deployment checks. |
+| `make test-firmware` | Run sanitized C/Tcl tests, Python tests, lint, and type checks. |
+| `make test-deploy` | Run readiness and Docker image/Compose contract checks. |
 
 After `make reset-auth`, run `make setup` to register again. Anisette state and
 key files are preserved. `make setup` refuses to run while the auth file
 already exists.
+
+## Production and development profiles
+
+| Property | Production | Development |
+| --- | --- | --- |
+| Build directory | `build-production/` | `build-development/` |
+| Optimization | Size (`-Os`) | Debug-friendly (`-Og`) |
+| Logs and console | Disabled | Deferred RTT logs over USB/SWD |
+| Software assertions | SDK production default: disabled | Enabled |
+| Hardware stack protection | Enabled | Enabled |
+| Unused CPUAPP RAM | Complete unused sections powered down | Kept powered for debugging |
+| Libc malloc arena | Disabled; firmware uses static pools | SDK default |
+| UART | Disabled | Disabled |
+| Advertising/key timing | 5 seconds / 30 minutes | Same |
+| RF switch / unused sensor supply | Onboard antenna / off | Same |
+
+The profiles share the firmware implementation, public key table, and radio
+behavior. Development does not secretly accelerate rotation or use example keys.
+Normal RTT logs are dropped if the host is absent or the buffer is full, rather
+than blocking advertising. Fatal/panic logging may block for debugging. The
+development build and attached debugger are not suitable for power measurements.
+
+Production powers down only complete RAM sections between the linked image end
+and CPUAPP's devicetree boundary. It leaves the section overlapping FLPR memory
+and memory outside CPUAPP untouched. The current image releases 128 KiB; the
+hardware mask and software-reboot recovery were verified on the board. This is
+not a measured current reduction. Adding dynamic allocation requires revisiting
+the heap and RAM-power configuration together.
+
+Every supported build checks the resolved Kconfig, not only configuration source
+files. CI compiles both profiles using example keys, runs the same profile gate,
+and checks host and deployment behavior. CI compile-test images are not release
+images. CI actions and container images remain pinned; workflow permissions are
+read-only. Local tests use a fresh temporary C build directory per invocation.
+
+`PROFILE=production` is the default. `PROFILE=development` is available directly
+as well as through the `-dev` targets. `NCS_DIR` can override the SDK workspace
+location; `BUILD_DIR` can override the output directory. Use the same custom
+`BUILD_DIR` for a development flash and its monitor command.
 
 ## Troubleshooting
 ### `make flash` says that keys are missing
@@ -137,9 +202,29 @@ The normal path uses OpenOCD image verification. Run `make flash` again with
 the board connected. The verified path was tested with the XIAO CMSIS-DAP.
 
 ### Runtime logs are needed
-The console is UART20 at 115200 baud. Connect a 3.3 V USB-UART adapter to
-P1.09 for TX and P1.08 for RX. The CMSIS-DAP USB modem is not the text console
-used by this board configuration.
+Production firmware has no console. With the board connected over USB, run:
+
+```sh
+make flash-dev
+make monitor
+```
+
+This uses the onboard CMSIS-DAP probe and OpenOCD RTT, tested on the actual XIAO.
+No external USB-UART adapter is needed. Run the monitor from an interactive
+terminal; it resets the target and may display buffered logs from before reset.
+Ctrl+C stops the monitor and its OpenOCD server. Only run it against the matching
+development image. Restore the low-power production build afterwards:
+
+```sh
+make flash
+```
+
+### Measuring power
+Software configuration is not a battery-life measurement. Measure the production
+image on the intended supply with the debugger and USB-UART disconnected. Check
+idle current, advertising pulses, and a complete key-rotation boundary. Board
+regulators, the debugger, and reset-time pin states can contribute independently
+of the application. No current-consumption or battery-life figure is guaranteed.
 
 ## Security
 Treat `~/.local/share/nrf5-tag/nrf5-tag_devices.json` and
