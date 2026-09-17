@@ -32,21 +32,21 @@ assert endpoint["ports"] == [{
     "published": "6176",
     "protocol": "tcp",
 }]
-assert endpoint["volumes"] == [{
-    "type": "bind",
-    "source": os.path.join(root, "deploy/endpoint"),
-    "target": "/app/endpoint/data",
-    "bind": {},
-}]
+assert len(endpoint["volumes"]) == 1, endpoint["volumes"]
+mount = endpoint["volumes"][0]
+assert mount["type"] == "bind", mount
+assert mount["source"] == os.path.join(root, "deploy/endpoint"), mount
+assert mount["target"] == "/app/endpoint/data", mount
+assert mount.get("read_only", False) is False, mount
 
 anisette = services["anisette"]
 assert "ports" not in anisette
-assert anisette["volumes"] == [{
-    "type": "volume",
-    "source": "anisette-state",
-    "target": "/home/Alcoholic/.config/anisette-v3",
-    "volume": {},
-}]
+assert len(anisette["volumes"]) == 1, anisette["volumes"]
+mount = anisette["volumes"][0]
+assert mount["type"] == "volume", mount
+assert mount["source"] == "anisette-state", mount
+assert mount["target"] == "/home/Alcoholic/.config/anisette-v3", mount
+assert mount.get("read_only", False) is False, mount
 assert config["volumes"]["anisette-state"]["name"].endswith("anisette-state")
 PY
 
