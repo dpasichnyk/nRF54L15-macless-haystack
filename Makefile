@@ -139,8 +139,8 @@ test-firmware:
 	cmake --build "$$build" --parallel 2; \
 	ctest --test-dir "$$build" --output-on-failure
 	uv run --with pytest==9.1.1 --with cryptography==50.0.1 --with typer==0.27.2 pytest tests/python -q
-	uv run --with ruff==0.16.5 ruff check scripts tests/python
-	uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts tests/python
+	uv run --with ruff==0.16.5 ruff check scripts deploy/report_fetch.py tests/python
+	uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts deploy/report_fetch.py tests/python
 
 test-deploy:
 	sh tests/deploy/test_setup_readiness.sh

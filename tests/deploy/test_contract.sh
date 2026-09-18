@@ -70,6 +70,7 @@ docker compose -f "$compose_file" run --rm --no-deps --entrypoint sh endpoint -c
     ! grep -Fq "verify=False" endpoint/register/pypush_gsa_icloud.py
     grep -Fq "https://idmsa.apple.com/appleauth/auth/verify/phone/securitycode" endpoint/register/pypush_gsa_icloud.py
 '
+docker compose -f "$compose_file" run --rm --no-deps -T --entrypoint python endpoint - < "$root/tests/deploy/test_report_endpoint.py"
 
 grep -Fqx 'port=6176' "$config_file"
 grep -Fqx 'binding_address=0.0.0.0' "$config_file"

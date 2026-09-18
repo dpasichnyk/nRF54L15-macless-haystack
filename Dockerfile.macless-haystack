@@ -3,6 +3,7 @@ FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef1
 ARG MACLESS_HAYSTACK_COMMIT=0bda271b8bd0cc37194dfba1845cd48954cba4cc
 
 COPY deploy/patches/macless-haystack-2fa-idmsa.patch /tmp/macless-haystack-2fa-idmsa.patch
+COPY deploy/patches/macless-haystack-report-fetch.patch /tmp/macless-haystack-report-fetch.patch
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y git \
@@ -12,6 +13,8 @@ RUN apt-get update \
     && test "$(git -C /source rev-parse HEAD)" = "$MACLESS_HAYSTACK_COMMIT" \
     && git -C /source apply --check /tmp/macless-haystack-2fa-idmsa.patch \
     && git -C /source apply /tmp/macless-haystack-2fa-idmsa.patch \
+    && git -C /source apply --check /tmp/macless-haystack-report-fetch.patch \
+    && git -C /source apply /tmp/macless-haystack-report-fetch.patch \
     && rm -f /source/endpoint/updateRepo /source/endpoint/data/rename_me.pem
 
 FROM python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
@@ -23,5 +26,6 @@ RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock \
     && rm /tmp/requirements.lock
 
 COPY --from=builder /source/endpoint /app/endpoint
+COPY deploy/report_fetch.py /app/endpoint/report_fetch.py
 
 CMD ["python", "-u", "endpoint/mh_endpoint.py"]

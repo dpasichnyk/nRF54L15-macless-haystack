@@ -1,0 +1,189 @@
+diff --git a/endpoint/mh_endpoint.py b/endpoint/mh_endpoint.py
+--- a/endpoint/mh_endpoint.py
++++ b/endpoint/mh_endpoint.py
+@@ -6,7 +6,6 @@
+ import ssl
+ import sys
+ import time
+-from collections import OrderedDict
+ from datetime import datetime,  timezone
+ from http.server import BaseHTTPRequestHandler, HTTPServer
+ 
+@@ -16,9 +15,66 @@
+ import mh_config
+ from register import apple_cryptography, pypush_gsa_icloud
++from report_fetch import (
++    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, InvalidRequest, InvalidResponse,
++    ReportCache, filter_response, parse_query, search_body,
++)
+ 
+ logger = logging.getLogger()
++report_cache = ReportCache()
++FETCH_URL = "https://gateway.icloud.com/acsnservice/fetch"
++
++
++class UpstreamUnavailable(RuntimeError):
++    pass
++
++
++def fetch_report_bytes(query):
++    if not os.path.isfile(mh_config.getConfigFile()):
++        raise InvalidResponse("Apple authentication is missing; run make setup")
++    auth = getAuth(regenerate=False, second_factor='sms')
++    for attempt in range(2):
++        try:
++            with requests.post(
++                FETCH_URL, auth=auth,
++                headers=pypush_gsa_icloud.generate_anisette_headers(),
++                json=search_body(query), timeout=(5, 15), stream=True,
++            ) as response:
++                if response.status_code >= 500 and attempt == 0:
++                    time.sleep(0.25)
++                    continue
++                response.raise_for_status()
++                body = bytearray()
++                for chunk in response.iter_content(chunk_size=65536):
++                    body.extend(chunk)
++                    if len(body) > MAX_RESPONSE_BYTES:
++                        raise InvalidResponse("Upstream response exceeds 4 MiB")
++                if body:
++                    return bytes(body)
++        except requests.exceptions.Timeout:
++            if attempt == 1:
++                raise
++        if attempt == 0:
++            time.sleep(0.25)
++    raise UpstreamUnavailable("Apple returned an empty response")
+ 
+ 
+ class ServerHandler(BaseHTTPRequestHandler):
++
++    def setup(self):
++        super().setup()
++        self.connection.settimeout(10)
++
++    def send_json(self, status, body):
++        encoded = json.dumps(body, allow_nan=False).encode('utf-8')
++        self.send_response(status)
++        self.addCORSHeaders()
++        if status == 401:
++            self.send_header('WWW-Authenticate', 'Basic realm="Auth Realm"')
++        self.send_header('Content-Type', 'application/json')
++        self.send_header('Content-Length', str(len(encoded)))
++        self.send_header('Connection', 'close')
++        self.end_headers()
++        self.close_connection = True
++        self.wfile.write(encoded)
+ 
+     def addCORSHeaders(self):
+@@ -67,70 +123,47 @@
+     def do_POST(self):
+         if not self.authenticate():
+-            self.send_response(401)
+-            self.addCORSHeaders()
+-            self.send_header('WWW-Authenticate', 'Basic realm="Auth Realm"')
+-            self.end_headers()
++            self.send_json(401, {"error": "Endpoint authentication required"})
+             return
+-        if hasattr(self.headers, 'getheader'):
+-            content_len = int(self.headers.getheader('content-length', 0))
+-        else:
+-            content_len = int(self.headers.get('content-length'))
+-
+-        post_body = self.rfile.read(content_len)
+-
+-        logger.debug('Getting with post: ' + str(post_body))
+-        body = json.loads(post_body)
+-        if "days" in body:
+-            days = body['days']
+-        else:
+-            days = 7
+-        logger.debug('Querying for ' + str(days) + ' days')
+-        unixEpoch = int(datetime.now().strftime('%s'))
+-        startdate = unixEpoch - (60 * 60 * 24 * days)
+-
+-        datetime.fromtimestamp(startdate)
+-
+-        # Date is always 1, because it has no effect
+-        data = {"search": [
+-            {"startDate": 1, "ids": list(body['ids'])}]}
+-
+         try:
+-            with requests.post("https://gateway.icloud.com/acsnservice/fetch",  auth=getAuth(regenerate=False, second_factor='sms'),
+-                              headers=pypush_gsa_icloud.generate_anisette_headers(),
+-                              json=data) as r:
+-                r.raise_for_status()
+-
+-            logger.debug('Return from fetch service:')
+-            logger.debug(r.content.decode())
+-            result = json.loads(r.content.decode())
+-            results = result['results']
+-
+-            newResults = OrderedDict()
+-
+-            for idx, entry in enumerate(results):
+-                data = base64.b64decode(entry['payload'])
+-                timestamp = int.from_bytes(data[0:4], 'big') + 978307200
+-                if (timestamp > startdate):
+-                    newResults[timestamp] = entry
+-
+-            sorted_map = OrderedDict(sorted(newResults.items(), reverse=True))
+-
+-            result["results"] = list(sorted_map.values())
+-            self.send_response(200)
+-            # send response headers
+-            self.addCORSHeaders()
+-            self.end_headers()
+-
+-            # send the body of the response
+-            responseBody = json.dumps(result)
+-            self.wfile.write(responseBody.encode())
+-        except requests.exceptions.ConnectTimeout:
+-            logger.error("Timeout to " + mh_config.getAnisetteServer() +
+-                         ", is your anisette running and accepting Connections?")
+-            self.send_response(504)
+-        except Exception as e:
+-            logger.error(f"Unknown error occurred {e}", exc_info=True)
+-            self.send_response(501)
++            lengths = self.headers.get_all('Content-Length', [])
++            if len(lengths) != 1 or self.headers.get('Transfer-Encoding'):
++                raise InvalidRequest("A single Content-Length is required")
++            content_len = int(lengths[0])
++            if content_len <= 0:
++                raise InvalidRequest("Request body must not be empty")
++            if content_len > MAX_REQUEST_BYTES:
++                self.send_json(413, {"error": "Request exceeds 64 KiB"})
++                return
++            query = parse_query(self.rfile.read(content_len))
++        except ValueError as error:
++            self.send_json(400, {"error": str(error)})
++            return
++        except TimeoutError:
++            self.send_json(408, {"error": "Request body timed out"})
++            return
++
++        try:
++            body = report_cache.get(query, time.monotonic())
++            if body is None:
++                body = fetch_report_bytes(query)
++                result = filter_response(body, query, time.time())
++                report_cache.put(query, body, time.monotonic())
++            else:
++                result = filter_response(body, query, time.time())
++            self.send_json(200, result)
++        except requests.exceptions.Timeout:
++            self.send_json(504, {"error": "Apple or Anisette request timed out"})
++        except requests.exceptions.HTTPError as error:
++            upstream = error.response.status_code if error.response is not None else 502
++            status = 503 if upstream == 429 or upstream >= 500 else 502
++            self.send_json(status, {"error": "Upstream request rejected", "upstream_status": upstream})
++        except requests.exceptions.RequestException:
++            self.send_json(502, {"error": "Unable to retrieve Apple reports"})
++        except UpstreamUnavailable:
++            self.send_json(503, {"error": "Apple returned an empty response"})
++        except (ValueError, KeyError, OSError) as error:
++            logger.warning("Report retrieval failed: %s", type(error).__name__)
++            self.send_json(502, {"error": "Invalid upstream response or local authentication"})
+ 
+     def getCurrentTimes(self):
+         clientTime = datetime.now(timezone.utc).replace(microsecond=0).isoformat() + 'Z'

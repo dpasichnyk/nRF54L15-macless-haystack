@@ -1,5 +1,7 @@
 # Keep the build context closed by default. The endpoint image needs only the
-# dependency lock and the reviewed upstream patch.
+# dependency lock, report helper, and reviewed upstream patches.
 *
 !deploy/requirements.lock
 !deploy/patches/macless-haystack-2fa-idmsa.patch
+!deploy/patches/macless-haystack-report-fetch.patch
+!deploy/report_fetch.py

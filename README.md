@@ -100,6 +100,42 @@ not guarantees of an on-air packet or a network sighting.
 
 The endpoint returns encrypted Apple reports. The client uses the private devices JSON to decrypt them. An empty result does not by itself show that the beacon is faulty.
 
+### Report retrieval and rotation
+The endpoint sends one Apple search entry per key, grouped into a single HTTP
+request. Putting all 50 keys into one search entry can omit newer reports; this
+was reproduced against the live service. There is no need to change the firmware
+or regenerate keys to fix that query behavior.
+
+Results are sorted newest-first and deduplicated by key and encrypted payload,
+not timestamp alone. Distinct sightings in the same second are preserved.
+The endpoint queries every requested key, rather than guessing the active key
+from the time: reboot restarts the firmware's RAM-only rotation at key zero.
+
+Successful, validated responses are cached in memory for 30 seconds, for at most
+four distinct key sets. The requested time window is applied on every refresh,
+including cache hits. The cache contains encrypted reports, not private keys,
+and disappears when the endpoint restarts. Expired data is not returned as a
+successful fallback after a failed fetch.
+
+Requests accept 1–50 distinct base64 SHA-256 key IDs and an integer `days` from
+1–31 (default 7). Request bodies are capped at 64 KiB and upstream responses at
+4 MiB. Apple requests have five-second connection and fifteen-second socket-read
+timeouts. Timeouts, empty bodies and server errors get at most one retry;
+authentication failures and rate limits are not retried. These are socket
+timeouts, not an absolute end-to-end deadline against a continuously streaming
+server. Apple still controls report availability and historical retention.
+
+Client errors return HTTP 400/413, unavailable or rate-limited upstream services
+return 503, upstream/authentication/protocol failures return 502, and reported
+upstream timeouts return 504. Errors have JSON bodies; a failed fetch is not
+presented as a successful empty report list.
+
+After updating the endpoint code, preserve existing authentication and rebuild:
+
+```sh
+docker compose up -d --build --no-deps endpoint
+```
+
 ## Operations
 | Command | Purpose |
 | --- | --- |
