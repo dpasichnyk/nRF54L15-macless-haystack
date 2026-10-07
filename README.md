@@ -137,6 +137,10 @@ docker compose up -d --build --no-deps endpoint
 ```
 
 ## Operations
+For persistent history, route playback, and geofences, use the optional
+[Traccar tracking stack](TRACKING.md). It reuses this endpoint and the existing
+keys; no firmware changes or second Apple login are required.
+
 | Command | Purpose |
 | --- | --- |
 | `make keys` | Generate the private import and firmware public key table. |

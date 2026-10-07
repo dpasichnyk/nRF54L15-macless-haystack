@@ -31,6 +31,15 @@ jobs:
       - name: Check readiness and isolated deployment contract
         run: make test-deploy
 
+  tracking-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+      - name: Check persistent tracking and outage recovery
+        run: make test-tracking
+
   firmware-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

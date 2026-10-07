@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help keys build build-dev flash flash-dev monitor setup up down logs status reset-auth test test-firmware test-deploy
+.PHONY: tracking-up tracking-down tracking-status tracking-logs tracking-backup tracking-replay test-tracking
 
 COMPOSE := docker compose
 AUTH := deploy/endpoint/auth.json
@@ -22,6 +23,10 @@ $(error PROFILE must be production or development)
 endif
 BUILD_DIR ?= $(CURDIR)/build-$(PROFILE)
 BOARD := xiao_nrf54l15/nrf54l15/cpuapp
+TRACKING_STATE_DIR ?= $(CURDIR)/.tracking
+TRACKING_PORT ?= 8082
+TRACKING_COMPOSE = TRACKING_STATE_DIR="$(TRACKING_STATE_DIR)" TRACKING_KEYS_FILE="$(DEVICES_JSON)" TRACKING_PORT="$(TRACKING_PORT)" $(COMPOSE) --env-file "$(TRACKING_STATE_DIR)/compose.env" -f compose.yaml -f compose.tracking.yaml
+TRACKING_SETUP := uv run --with cryptography==50.0.1 python -m tracking.setup
 
 help:
 	@printf '%s\n' \
@@ -37,7 +42,14 @@ help:
 		'make logs        Follow service logs' \
 		'make status      Show service status' \
 		'make reset-auth  Remove only the saved Apple token' \
-		'make test        Run firmware and deployment checks'
+		'make test        Run firmware and deployment checks' \
+		'make tracking-up Start persistent collection and local Traccar UI' \
+		'make tracking-down Stop tracking services without deleting history' \
+		'make tracking-status Show tracking containers and history counts' \
+		'make tracking-logs Follow tracking service logs' \
+		'make tracking-backup Save consistent SQLite and PostgreSQL backups' \
+		'make tracking-replay Reconcile stored positions with Traccar again' \
+		'make test-tracking Run isolated Traccar integration tests'
 
 keys:
 	@set -eu; \
@@ -139,9 +151,46 @@ test-firmware:
 	cmake --build "$$build" --parallel 2; \
 	ctest --test-dir "$$build" --output-on-failure
 	uv run --with pytest==9.1.1 --with cryptography==50.0.1 --with typer==0.27.2 pytest tests/python -q
-	uv run --with ruff==0.16.5 ruff check scripts deploy/report_fetch.py tests/python
-	uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts deploy/report_fetch.py tests/python
+	uv run --with ruff==0.16.5 ruff check scripts deploy/report_fetch.py tracking tests/python tests/integration
+	uv run --with basedpyright==1.39.10 --with cryptography==50.0.1 --with typer==0.27.2 --with pytest==9.1.1 basedpyright scripts deploy/report_fetch.py tracking tests/python tests/integration
 
 test-deploy:
 	sh tests/deploy/test_setup_readiness.sh
 	sh tests/deploy/test_contract.sh
+
+tracking-up:
+	@test -f "$(AUTH)" || { printf '%s\n' 'Register Apple access with make setup first.' >&2; exit 1; }
+	$(TRACKING_SETUP) init --state "$(TRACKING_STATE_DIR)" --keys "$(DEVICES_JSON)"
+	$(TRACKING_COMPOSE) build collector
+	$(TRACKING_COMPOSE) run --rm --no-deps --user 0:0 --cap-add CHOWN --cap-add FOWNER --entrypoint python collector -c 'import os; os.chown("/data", int(os.environ["TRACKING_UID"]), int(os.environ["TRACKING_GID"])); os.chmod("/data", 0o700)'
+	$(COMPOSE) up -d endpoint anisette
+	$(TRACKING_COMPOSE) up -d tracking-db traccar
+	$(TRACKING_SETUP) bootstrap --state "$(TRACKING_STATE_DIR)" --keys "$(DEVICES_JSON)" --url "http://127.0.0.1:$(TRACKING_PORT)"
+	$(TRACKING_COMPOSE) up -d --force-recreate collector
+
+tracking-down:
+	$(TRACKING_COMPOSE) stop collector traccar tracking-db
+
+tracking-status:
+	$(TRACKING_COMPOSE) ps
+	$(TRACKING_COMPOSE) exec -T collector python -m tracking status
+
+tracking-logs:
+	$(TRACKING_COMPOSE) logs -f collector traccar
+
+tracking-replay:
+	$(TRACKING_COMPOSE) exec -T collector python -m tracking replay
+
+tracking-backup:
+	@set -eu; umask 077; stamp=$$(date -u +%Y%m%dT%H%M%SZ); \
+	$(TRACKING_COMPOSE) exec -T collector python -m tracking backup "/data/backups/$$stamp.sqlite3"; \
+	$(TRACKING_COMPOSE) cp "collector:/data/backups/$$stamp.sqlite3" "$(TRACKING_STATE_DIR)/backups/$$stamp.sqlite3.tmp"; \
+	chmod 600 "$(TRACKING_STATE_DIR)/backups/$$stamp.sqlite3.tmp"; \
+	mv "$(TRACKING_STATE_DIR)/backups/$$stamp.sqlite3.tmp" "$(TRACKING_STATE_DIR)/backups/$$stamp.sqlite3"; \
+	$(TRACKING_COMPOSE) exec -T tracking-db pg_dump -U traccar -d traccar \
+	  > "$(TRACKING_STATE_DIR)/backups/$$stamp.sql.tmp"; \
+	mv "$(TRACKING_STATE_DIR)/backups/$$stamp.sql.tmp" "$(TRACKING_STATE_DIR)/backups/$$stamp.sql"; \
+	printf '%s\n' "Backups saved under $(TRACKING_STATE_DIR)/backups"
+
+test-tracking:
+	uv run --with pytest==9.1.1 --with cryptography==50.0.1 pytest tests/integration -q

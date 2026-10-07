@@ -1,0 +1,93 @@
+services:
+  tracking-db:
+    image: postgres:17@sha256:a6ec007920913e8d715a41e68a17b05ddf30e62d69565814988a896767594cc6
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: traccar
+      POSTGRES_USER: traccar
+      POSTGRES_PASSWORD_FILE: /run/secrets/tracking-db-password
+    secrets:
+      - tracking-db-password
+    volumes:
+      - tracking-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traccar -d traccar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  traccar:
+    image: traccar/traccar:6.15.3@sha256:35346b4af46d57adaeff69a548a7d2cb189a2487fe9c24c99044ee7aa104b5df
+    restart: unless-stopped
+    environment:
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx512m
+    user: "${TRACKING_UID:?Run make tracking-up}:${TRACKING_GID:?Run make tracking-up}"
+    depends_on:
+      tracking-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${TRACKING_PORT:-8082}:8082"
+    volumes:
+      - type: bind
+        source: ${TRACKING_STATE_DIR:-./.tracking}/traccar.xml
+        target: /opt/traccar/conf/traccar.xml
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TRACKING_STATE_DIR:-./.tracking}/traccar-data
+        target: /opt/traccar/data
+        bind: {create_host_path: false}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.tracking
+    restart: unless-stopped
+    user: "${TRACKING_UID:?Run make tracking-up}:${TRACKING_GID:?Run make tracking-up}"
+    stop_grace_period: 70s
+    environment:
+      TRACKING_POLL_SECONDS: ${TRACKING_POLL_SECONDS:-60}
+      TRACKING_UID: ${TRACKING_UID}
+      TRACKING_GID: ${TRACKING_GID}
+    volumes:
+      - type: bind
+        source: ${TRACKING_KEYS_FILE:?Path to existing devices JSON is required}
+        target: /run/secrets/devices.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${TRACKING_STATE_DIR:-./.tracking}/collector.json
+        target: /run/secrets/collector.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: volume
+        source: tracking-history
+        target: /data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python", "-m", "tracking", "health"]
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+secrets:
+  tracking-db-password:
+    file: ${TRACKING_STATE_DIR:-./.tracking}/db-password
+
+volumes:
+  tracking-postgres:
+  tracking-history:

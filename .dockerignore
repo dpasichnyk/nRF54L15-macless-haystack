@@ -5,3 +5,5 @@
 !deploy/patches/macless-haystack-2fa-idmsa.patch
 !deploy/patches/macless-haystack-report-fetch.patch
 !deploy/report_fetch.py
+!tracking/**/*.py
+!deploy/tracking-requirements.lock
