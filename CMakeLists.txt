@@ -13,12 +13,15 @@ target_sources(app PRIVATE
 
 option(BEACON_ALLOW_EXAMPLE_KEYS "Build with the nonfunctional example key" OFF)
 
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/keys.c)
-  target_sources(app PRIVATE src/keys.c)
+set(BEACON_KEYS_C "${CMAKE_CURRENT_SOURCE_DIR}/src/keys.c" CACHE FILEPATH
+    "Generated public key table compiled into the firmware")
+
+if(EXISTS ${BEACON_KEYS_C})
+  target_sources(app PRIVATE ${BEACON_KEYS_C})
 elseif(BEACON_ALLOW_EXAMPLE_KEYS)
   target_sources(app PRIVATE src/keys.example.c)
 else()
   message(FATAL_ERROR
-    "Missing src/keys.c. Generate it with scripts/keys_csv_to_c.py, or set "
+    "Missing ${BEACON_KEYS_C}. Generate it with scripts/keys_csv_to_c.py, or set "
     "BEACON_ALLOW_EXAMPLE_KEYS=ON for a nonfunctional development build.")
 endif()

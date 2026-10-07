@@ -9,8 +9,11 @@ build-*/
 
 # Generated key material
 src/keys.c
+src/keys_*.c
 public-x.csv
+*_public-x.csv
 *_devices.json
+*_import.json
 *.keys
 
 # Local credentials

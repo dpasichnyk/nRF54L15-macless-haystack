@@ -102,7 +102,11 @@ def provision(
     count: Annotated[int, typer.Option(min=1, max=50)],
     devices_output: Annotated[Path, typer.Option()],
     public_keys_output: Annotated[Path, typer.Option()],
+    device_id: Annotated[int, typer.Option(min=1, max=2147483647)] = 1,
+    name: Annotated[str, typer.Option()] = "nrf5-tag",
 ) -> None:
+    if not 1 <= len(name) <= 128:
+        raise typer.BadParameter("name must contain between 1 and 128 characters")
     if devices_output.resolve() == public_keys_output.resolve():
         raise typer.BadParameter("output paths must differ")
     for output in (devices_output, public_keys_output):
@@ -114,8 +118,8 @@ def provision(
         base64.b64encode(key.private_scalar).decode("ascii") for key in keys
     ]
     device: Device = {
-        "name": "nrf5-tag",
-        "id": 1,
+        "name": name,
+        "id": device_id,
         "colorComponents": [0, 1, 0, 1],
         "privateKey": private_keys[-1],
         "icon": "",

@@ -82,3 +82,66 @@ def test_development_monitor_uses_development_directory() -> None:
     )
     assert str(ROOT / "build-development") in result.stdout
     assert str(ROOT / "build-production") not in result.stdout
+
+
+def dry_run(*arguments: str) -> str:
+    result = subprocess.run(
+        ["make", "-n", *arguments], cwd=ROOT,
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout
+
+
+def test_default_tag_keeps_the_original_single_tag_paths() -> None:
+    output = dry_run("keys")
+
+    assert f"{ROOT / 'src/keys.c'}" in output
+    assert "nrf5-tag_devices.json" in output
+    assert "src/keys_" not in output.replace(f"{ROOT / 'src/keys.c'}", "")
+
+
+@pytest.mark.parametrize("command", ["build", "flash"])
+def test_tagged_build_uses_its_own_key_table_and_directory(command: str) -> None:
+    output = dry_run(command, "TAG=b")
+    keys = ROOT / "src" / "keys_b.c"
+    directory = ROOT / "build-production-b"
+
+    assert f'-DBEACON_KEYS_C="{keys}"' in output
+    assert f'"{directory}"' in output
+
+
+def test_untagged_build_keeps_default_paths() -> None:
+    output = dry_run("build")
+    keys = ROOT / "src" / "keys.c"
+    directory = ROOT / "build-production"
+
+    assert f'-DBEACON_KEYS_C="{keys}"' in output
+    assert f'"{directory}"' in output
+    assert "keys_b.c" not in output
+    assert "build-production-b" not in output
+
+
+def test_tagged_development_build_forwards_the_tag() -> None:
+    output = dry_run("build-dev", "TAG=b")
+    directory = ROOT / "build-development-b"
+
+    assert "PROFILE=development" in output
+    assert f'"{directory}"' in output
+    assert f'"{ROOT / "build-development"}"' not in output
+
+
+def test_keys_for_two_tags_produce_distinct_outputs() -> None:
+    first = dry_run("keys")
+    second = dry_run("keys", "TAG=b", "DEVICE_ID=2")
+
+    assert "nrf5-tag_b_devices.json" in second
+    assert "src/keys_b.c" in second
+    assert "--device-id \"2\"" in second
+    assert first != second
+
+
+def test_import_merges_every_generated_device_export() -> None:
+    output = dry_run("import")
+
+    assert "-m tracking.devices" in output
+    assert "nrf5-tag_import.json" in output

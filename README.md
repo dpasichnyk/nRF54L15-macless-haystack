@@ -41,6 +41,37 @@ Import this JSON into Macless-Haystack and keep it private. The generated
 `src/keys.c` contains public X coordinates and is ignored by Git. `make keys`
 refuses to overwrite existing outputs.
 
+`make keys` also merges every generated device export into a single import file
+at `~/.local/share/nrf5-tag/nrf5-tag_import.json`. That merged file is what the
+client and the collector consume, so it is the only file you need to import or
+mount. `make import` rebuilds it without regenerating keys.
+
+### Tracking several beacons
+Each physical beacon needs its own key table. Beacons that share a key table
+are indistinguishable to Apple and appear as one device.
+
+```sh
+make keys TAG=b DEVICE_ID=2       # independent 50-key table for a second beacon
+make flash TAG=b                   # build and flash it to that board
+```
+
+`TAG` selects an isolated slug, so nothing is shared or overwritten:
+
+| Artifact | First beacon | Second beacon (`TAG=b`) |
+| --- | --- | --- |
+| Firmware key table | `src/keys.c` | `src/keys_b.c` |
+| Private device export | `nrf5-tag_devices.json` | `nrf5-tag_b_devices.json` |
+| Build directory | `build-production/` | `build-production-b/` |
+
+`DEVICE_ID` must be unique; the collector and the map use it as the device
+identity. After generating keys, run `make import` (or `make keys`, which calls
+it) so the merged import contains every beacon, then re-run `make tracking-up`
+to register new tags. Import the same merged file into the Macless-Haystack
+client.
+
+To rebuild the original beacon later, use the default untagged commands:
+`make keys` and `make flash`.
+
 ### 2. Build and flash
 Connect the board, then run:
 
@@ -144,6 +175,8 @@ keys; no firmware changes or second Apple login are required.
 | Command | Purpose |
 | --- | --- |
 | `make keys` | Generate the private import and firmware public key table. |
+| `make keys TAG=b DEVICE_ID=2` | Generate an independent key table for another beacon. |
+| `make import` | Merge every device export into the single import file. |
 | `make help` | List the supported commands. |
 | `make build` | Build and verify the production configuration, without flashing. |
 | `make build-dev` | Build and verify the development configuration, without flashing. |
@@ -201,7 +234,9 @@ read-only. Local tests use a fresh temporary C build directory per invocation.
 `PROFILE=production` is the default. `PROFILE=development` is available directly
 as well as through the `-dev` targets. `NCS_DIR` can override the SDK workspace
 location; `BUILD_DIR` can override the output directory. Use the same custom
-`BUILD_DIR` for a development flash and its monitor command.
+`BUILD_DIR` for a development flash and its monitor command. `TAG` selects an
+independent key table and build directory for an additional beacon; without it,
+the original single-beacon paths are used unchanged.
 
 ## Troubleshooting
 ### `make flash` says that keys are missing
@@ -215,6 +250,12 @@ move only the output you intentionally want to regenerate.
 To replace an older one-key setup, back up and move the devices JSON,
 `public-x.csv`, and `src/keys.c` together. Run `make keys`, import the new JSON,
 and flash the newly generated firmware.
+
+### Two beacons appear as one device
+They share a key table. Generate a separate table with
+`make keys TAG=<slug> DEVICE_ID=<unique id>`, flash that build to the second
+board, then run `make import` and `make tracking-up`. The merged import file
+must list every beacon; each device `id` must be unique.
 
 ### `make setup` says that authentication already exists
 The existing token is at `deploy/endpoint/auth.json`. Use `make up` to keep it.

@@ -40,8 +40,10 @@ containers outside this project are not modified.
 
 ## Behavior
 
-- All configured keys are queried, including `privateKey` and `additionalKeys`.
-  No clock-based guess about the currently active firmware key is needed.
+- Every device in the merged import file is tracked, including `privateKey` and
+  `additionalKeys` for each. One tag becomes one Traccar device, so several
+  beacons stay separate. No clock-based guess about the active firmware key is
+  needed, and rebooted beacons restart at their own key zero.
 - Polling runs every 60 seconds, with bounded error backoff. Set
   `TRACKING_POLL_SECONDS` to 30–3600 seconds if needed.
 - Every available report is stored by tag and a digest of its key ID plus

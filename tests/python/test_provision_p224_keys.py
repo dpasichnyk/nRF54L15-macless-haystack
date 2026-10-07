@@ -177,6 +177,68 @@ def test_devices_json_schema_when_generating_multiple_keys(tmp_path: Path) -> No
     )
 
 
+def test_distinct_device_id_and_name_when_provisioning_a_second_tag(
+    tmp_path: Path,
+) -> None:
+    # Given
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--count",
+            "2",
+            "--devices-output",
+            str(tmp_path / "devices.json"),
+            "--public-keys-output",
+            str(tmp_path / "public-x.csv"),
+            "--device-id",
+            "7",
+            "--name",
+            "nrf5-tag-b",
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    # When
+    device = parse_devices_json(
+        (tmp_path / "devices.json").read_text(encoding="ascii")
+    )
+
+    # Then
+    assert completed.returncode == 0
+    assert device["id"] == 7
+    assert device["name"] == "nrf5-tag-b"
+
+
+@pytest.mark.parametrize(
+    "arguments", [("--device-id", "0"), ("--device-id", "2147483648"), ("--name", "")]
+)
+def test_out_of_range_identity_is_rejected_when_provisioning(
+    tmp_path: Path, arguments: tuple[str, str]
+) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--count",
+            "1",
+            "--devices-output",
+            str(tmp_path / "devices.json"),
+            "--public-keys-output",
+            str(tmp_path / "public-x.csv"),
+            *arguments,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert not (tmp_path / "devices.json").exists()
+
+
 def test_private_output_mode_is_0600_when_provisioning(tmp_path: Path) -> None:
     # Given
     _ = run_provisioner(tmp_path, 1)

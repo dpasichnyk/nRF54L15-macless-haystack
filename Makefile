@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help keys build build-dev flash flash-dev monitor setup up down logs status reset-auth test test-firmware test-deploy
+.PHONY: help keys import build build-dev flash flash-dev monitor setup up down logs status reset-auth test test-firmware test-deploy
 .PHONY: tracking-up tracking-down tracking-status tracking-logs tracking-backup tracking-replay test-tracking
 
 COMPOSE := docker compose
@@ -11,6 +11,25 @@ ANISETTE_READY_URL ?= http://anisette:6969
 KEY_DIR ?= $(HOME)/.local/share/nrf5-tag
 DEVICES_JSON := $(KEY_DIR)/nrf5-tag_devices.json
 PUBLIC_KEYS := $(KEY_DIR)/public-x.csv
+# TAG selects an independent key table so several beacons stay separately
+# trackable. With no TAG these resolve to the original single-tag paths.
+TAG ?=
+ifeq ($(TAG),)
+TAG_DEVICES_JSON := $(DEVICES_JSON)
+TAG_PUBLIC_KEYS := $(PUBLIC_KEYS)
+TAG_KEYS_C := $(CURDIR)/src/keys.c
+else
+TAG_DEVICES_JSON := $(KEY_DIR)/nrf5-tag_$(TAG)_devices.json
+TAG_PUBLIC_KEYS := $(KEY_DIR)/nrf5-tag_$(TAG)_public-x.csv
+TAG_KEYS_C := $(CURDIR)/src/keys_$(TAG).c
+endif
+DEVICE_ID ?= 1
+DEVICE_NAME ?= nrf5-tag$(if $(TAG),-$(TAG),)
+KEYS_C ?= $(TAG_KEYS_C)
+IMPORT_JSON := $(KEY_DIR)/nrf5-tag_import.json
+IMPORT_SOURCES := $(sort $(wildcard $(KEY_DIR)/nrf5-tag_devices.json) \
+	$(wildcard $(KEY_DIR)/nrf5-tag_*_devices.json))
+TRACKING_SETUP := uv run --with cryptography==50.0.1 python -m tracking.setup
 NCS_VERSION := v3.2.1
 NCS_DIR ?= /opt/nordic/ncs/$(NCS_VERSION)
 PROFILE ?= production
@@ -21,16 +40,18 @@ EXTRA_CONF := debug.conf
 else
 $(error PROFILE must be production or development)
 endif
-BUILD_DIR ?= $(CURDIR)/build-$(PROFILE)
+BUILD_DIR ?= $(CURDIR)/build-$(PROFILE)$(if $(TAG),-$(TAG))
 BOARD := xiao_nrf54l15/nrf54l15/cpuapp
 TRACKING_STATE_DIR ?= $(CURDIR)/.tracking
 TRACKING_PORT ?= 8082
-TRACKING_COMPOSE = TRACKING_STATE_DIR="$(TRACKING_STATE_DIR)" TRACKING_KEYS_FILE="$(DEVICES_JSON)" TRACKING_PORT="$(TRACKING_PORT)" $(COMPOSE) --env-file "$(TRACKING_STATE_DIR)/compose.env" -f compose.yaml -f compose.tracking.yaml
+TRACKING_COMPOSE = TRACKING_STATE_DIR="$(TRACKING_STATE_DIR)" TRACKING_KEYS_FILE="$(IMPORT_JSON)" TRACKING_PORT="$(TRACKING_PORT)" $(COMPOSE) --env-file "$(TRACKING_STATE_DIR)/compose.env" -f compose.yaml -f compose.tracking.yaml
 TRACKING_SETUP := uv run --with cryptography==50.0.1 python -m tracking.setup
 
 help:
 	@printf '%s\n' \
 		'make keys        Generate the private import file and firmware public key' \
+		'make keys TAG=b  Generate an independent key table for a second beacon' \
+		'make import      Merge every generated device export into one import file' \
 		'make build       Build and check the low-power production profile' \
 		'make build-dev   Build and check the development profile with RTT logs' \
 		'make flash       Build and verified-flash production firmware' \
@@ -53,22 +74,29 @@ help:
 
 keys:
 	@set -eu; \
-	for path in "$(DEVICES_JSON)" "$(PUBLIC_KEYS)" src/keys.c; do \
+	for path in "$(TAG_DEVICES_JSON)" "$(TAG_PUBLIC_KEYS)" "$(TAG_KEYS_C)"; do \
 		if [ -e "$$path" ]; then printf '%s\n' "Refusing to overwrite $$path" >&2; exit 1; fi; \
 	done; \
 	mkdir -p "$(KEY_DIR)"; \
 	chmod 700 "$(KEY_DIR)"; \
 	uv run scripts/provision_p224_keys.py --count 50 \
-		--devices-output "$(DEVICES_JSON)" \
-		--public-keys-output "$(PUBLIC_KEYS)"; \
-	uv run scripts/keys_csv_to_c.py "$(PUBLIC_KEYS)" src/keys.c
+		--devices-output "$(TAG_DEVICES_JSON)" \
+		--public-keys-output "$(TAG_PUBLIC_KEYS)" \
+		--device-id "$(DEVICE_ID)" --name "$(DEVICE_NAME)"; \
+	uv run scripts/keys_csv_to_c.py "$(TAG_PUBLIC_KEYS)" "$(TAG_KEYS_C)"
+	$(MAKE) import
+
+import:
+	@test -n "$(IMPORT_SOURCES)" || { printf '%s\n' 'No device exports found; run make keys first.' >&2; exit 1; }
+	uv run --with cryptography==50.0.1 python -m tracking.devices \
+		"$(IMPORT_JSON)" $(IMPORT_SOURCES)
 
 build:
-	@test -f src/keys.c || { printf '%s\n' 'src/keys.c is missing; run make keys.' >&2; exit 1; }
+	@test -f "$(KEYS_C)" || { printf '%s\n' 'src/keys.c is missing; run make keys.' >&2; exit 1; }
 	nrfutil sdk-manager toolchain launch --ncs-version $(NCS_VERSION) \
 		--chdir "$(NCS_DIR)" -- west build \
 		--pristine=always --no-sysbuild -b $(BOARD) -d "$(BUILD_DIR)" "$(CURDIR)" \
-		-- -DEXTRA_CONF_FILE="$(EXTRA_CONF)"
+		-- -DEXTRA_CONF_FILE="$(EXTRA_CONF)" -DBEACON_KEYS_C="$(KEYS_C)"
 	cmake -DBUILD_DIR="$(BUILD_DIR)" -DPROFILE=$(PROFILE) -P tests/firmware/check_profile.cmake
 
 build-dev:
@@ -160,12 +188,12 @@ test-deploy:
 
 tracking-up:
 	@test -f "$(AUTH)" || { printf '%s\n' 'Register Apple access with make setup first.' >&2; exit 1; }
-	$(TRACKING_SETUP) init --state "$(TRACKING_STATE_DIR)" --keys "$(DEVICES_JSON)"
+	$(TRACKING_SETUP) init --state "$(TRACKING_STATE_DIR)" --keys "$(IMPORT_JSON)"
 	$(TRACKING_COMPOSE) build collector
 	$(TRACKING_COMPOSE) run --rm --no-deps --user 0:0 --cap-add CHOWN --cap-add FOWNER --entrypoint python collector -c 'import os; os.chown("/data", int(os.environ["TRACKING_UID"]), int(os.environ["TRACKING_GID"])); os.chmod("/data", 0o700)'
 	$(COMPOSE) up -d endpoint anisette
 	$(TRACKING_COMPOSE) up -d tracking-db traccar
-	$(TRACKING_SETUP) bootstrap --state "$(TRACKING_STATE_DIR)" --keys "$(DEVICES_JSON)" --url "http://127.0.0.1:$(TRACKING_PORT)"
+	$(TRACKING_SETUP) bootstrap --state "$(TRACKING_STATE_DIR)" --keys "$(IMPORT_JSON)" --url "http://127.0.0.1:$(TRACKING_PORT)"
 	$(TRACKING_COMPOSE) up -d --force-recreate collector
 
 tracking-down:
